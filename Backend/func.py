@@ -5,35 +5,33 @@ import faiss
 import numpy as np
 from dotenv import load_dotenv
 import google.generativeai as genai
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
 from langchain_community.docstore.in_memory import InMemoryDocstore
+from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.agents import initialize_agent
+from langchain.tools import Tool
+from langchain.agents.agent_types import AgentType
+from duckduckgo_search import DDGS
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
+# Constants
 PDF_PATH = 'uploads/'
 FAISS_FILE = 'faiss_index.index'
 DOCSTORE_FILE = 'in_memory_docstore.pkl'
 INDEX_TO_DOCSTORE_ID_FILE = 'index_to_docstore_id.pkl'
 
+# Load LLM and embedding model
 embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+chat_model = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.7, google_api_key=GEMINI_API_KEY)
 
-generation_config = {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
-
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    generation_config=generation_config
-)
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
 def extract_text_from_pdf(pdf_path):
     text = ""
@@ -81,8 +79,7 @@ def store_embeddings(chunks_with_metadata):
     with open(INDEX_TO_DOCSTORE_ID_FILE, 'wb') as f:
         pickle.dump(index_to_docstore_id, f)
 
-    return FAISS(embedding_function=embedding_model, index=index,
-                 docstore=docstore, index_to_docstore_id=index_to_docstore_id)
+    return FAISS(embedding_function=embedding_model, index=index, docstore=docstore, index_to_docstore_id=index_to_docstore_id)
 
 def load_embeddings():
     index = faiss.read_index(FAISS_FILE)
@@ -90,83 +87,97 @@ def load_embeddings():
         docstore = pickle.load(f)
     with open(INDEX_TO_DOCSTORE_ID_FILE, 'rb') as f:
         index_to_docstore_id = pickle.load(f)
+    return FAISS(embedding_function=embedding_model, index=index, docstore=docstore, index_to_docstore_id=index_to_docstore_id)
 
-    return FAISS(embedding_function=embedding_model, index=index,
-                 docstore=docstore, index_to_docstore_id=index_to_docstore_id)
-
-def retrieve_relevant_chunks(vector_store, query, k=5):
-    docs = vector_store.similarity_search(query, k=k)
-    return "\n".join([f"[{doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in docs])
-
-def generate_with_google(context, query):
-    response = model.generate_content(f"Based on the context provided below, answer the following query. Context: {context}\nQuery: {query}\nAnswer:")
-    return response.text
-
-def format_chat_history(history, max_turns=5):
-    formatted = ""
-    for user_input, bot_reply in history[-max_turns:]:
-        formatted += f"User: {user_input}\nBot: {bot_reply}\n"
-    return formatted
-
-def run_rag_pipeline_with_history(vector_store, query, chat_history, pdf_names, k=5):
-    retrieved_text = retrieve_relevant_chunks(vector_store, query, k=k)
-    history_context = format_chat_history(chat_history)
-    metadata_context = f"Total PDFs uploaded: {len(pdf_names)}\nList of PDFs: {', '.join(pdf_names)}"
-    full_context = f"{history_context}\n{metadata_context}\nContext from documents:\n{retrieved_text}"
-    response = generate_with_google(full_context, query)
-    chat_history.append((query, response))
-    return response
-
-def initialize_rag(load_from_disk=False):
-    texts = extract_texts_from_folder(PDF_PATH)
-    pdf_names = list(texts.keys())
-
-    if not load_from_disk:
-        chunks_with_meta = prepare_chunks_with_metadata(texts)
-        vector_store = store_embeddings(chunks_with_meta)
+def initialize_vectorstore(use_existing_embeddings=True):
+    if use_existing_embeddings:
+        return load_embeddings()
     else:
-        vector_store = load_embeddings()
+        texts = extract_texts_from_folder(PDF_PATH)
+        meta_chunks = prepare_chunks_with_metadata(texts)
+        return store_embeddings(meta_chunks)
 
-    return vector_store, pdf_names
+# Functional Utilities
+def retrieve_relevant_chunks(query, vector_store, k=5):
+    return vector_store.similarity_search(query, k=k)
 
-def is_question_answerable(query, context):
-    prompt = f"""Given the following context, can the question be answered with high confidence?
+def rag_query(query: str, vector_store, memory_instance):
+    docs = retrieve_relevant_chunks(query, vector_store)
+    context = " ".join([doc.page_content for doc in docs])
+    history_text = "\n".join([msg.content for msg in memory_instance.chat_memory.messages if isinstance(msg, (HumanMessage, AIMessage)) and hasattr(msg, "content")])
+    if not history_text:
+        history_text = "No previous conversation context."
+    prompt = f"""Use the previous conversation and document content to answer the question.
 
-                Context:
+                Previous Conversation:
+                {history_text}
+
+                Document Context:
+                {context}
+
+                Question:
+                {query}
+            """
+    return chat_model.invoke(prompt).content
+
+def is_answerable(query: str, vector_store, memory_instance):
+    docs = retrieve_relevant_chunks(query, vector_store)
+    context = " ".join([doc.page_content for doc in docs])
+    history_text = "\n".join([msg.content for msg in memory_instance.chat_memory.messages if isinstance(msg, (HumanMessage, AIMessage)) and hasattr(msg, "content")])
+    if not history_text:
+        history_text = "No previous conversation context."
+    prompt = f"""Given the previous conversation and the extracted context from documents,
+                can the following question be answered using the available information?
+
+                Previous Conversation:
+                {history_text}
+
+                Document Context:
                 {context}
 
                 Question:
                 {query}
 
-                Answer with only 'Yes' or 'No'.
+                Answer only Yes or No.
             """
-    
-    response = model.generate_content(prompt).text.strip().lower()
-    return response.startswith("yes")
+    result = chat_model.invoke(prompt).content.lower()
+    return "Yes" if "yes" in result else "No"
 
-def dummy_web_search(query):
-    # Simulate web results (in real usage, integrate DuckDuckGo, Google API, etc.)
-    web_context = f"This is mock web search result for the query: {query}"
-    return web_context
+def web_search(query: str):
+    results = DDGS().text(query, max_results=5)
+    info = "\n\n".join(doc["body"] for doc in results)
+    prompt = f"Answer the query {query} based on the online resource information: {info}"
+    return chat_model.invoke(prompt).content
 
+def extract_keywords(query: str, vector_store):
+    docs = retrieve_relevant_chunks(query, vector_store)
+    context = " ".join([doc.page_content for doc in docs])
+    prompt = f"Extract key topics and keywords from this content:\n{context}"
+    return chat_model.invoke(prompt).content
 
-def smart_query_handler(vector_store, query, chat_history, pdf_names, k=5):
-    context = retrieve_relevant_chunks(vector_store, query, k)
-    is_answerable = is_question_answerable(query, context)
-    
-    if is_answerable:
-        return run_rag_pipeline_with_history(vector_store, query, chat_history, pdf_names)
-    else:
-        web_context = dummy_web_search(query)
-        response = generate_with_google(web_context, query)
-        chat_history.append((query, response))
-        return response
+def summarize_text(query: str, vector_store, memory_instance):
+    keywords_result = extract_keywords(query, vector_store)
+    keywords = keywords_result.split(", ")[:10]
+    history_text = "\n".join([msg.content for msg in memory_instance.chat_memory.messages if isinstance(msg, (HumanMessage, AIMessage)) and hasattr(msg, "content")])
+    if not history_text:
+        history_text = "No previous conversation context."
+    prompt = f"""Using the previous conversation and the important keywords, provide a meaningful summary.
 
+                Previous Conversation:
+                {history_text}
 
-if __name__ == "__main__":
-    chat_history = []
-    vector_store, pdf_names = initialize_rag(load_from_disk=False)
+                Focus Keywords: {', '.join(keywords)}
 
-    query = "How many pdfs are provided?"
-    answer = smart_query_handler(vector_store, query, chat_history, pdf_names)
-    print(answer)
+                Now, summarize the document accordingly.
+            """
+    return chat_model.invoke(prompt).content
+
+def generate_mcqs(query: str, vector_store):
+    docs = retrieve_relevant_chunks(query, vector_store)
+    context = " ".join([doc.page_content for doc in docs])
+    prompt = f"Generate 5 MCQs from the following content:\n{context}"
+    return chat_model.invoke(prompt).content
+
+def mcq_feedback(input_text: str):
+    prompt = f"Evaluate the following MCQ attempt:\n{input_text}\nProvide feedback."
+    return chat_model.invoke(prompt).content

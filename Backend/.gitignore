@@ -4,3 +4,4 @@ in_memory_docstore.pkl
 index_to_docstore_id.pkl
 Testing.ipynb
 .ipynb_checkpoints
+__pycache__
