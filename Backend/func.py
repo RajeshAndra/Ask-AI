@@ -172,12 +172,68 @@ def summarize_text(query: str, vector_store, memory_instance):
             """
     return chat_model.invoke(prompt).content
 
-def generate_mcqs(query: str, vector_store):
+def generate_mcqs(query: str, vector_store, num_of_questions, difficulty):
     docs = retrieve_relevant_chunks(query, vector_store)
     context = " ".join([doc.page_content for doc in docs])
-    prompt = f"Generate 5 MCQs from the following content:\n{context}"
-    return chat_model.invoke(prompt).content
+    prompt = f"""
+        You are a knowledgeable assistant tasked with creating multiple-choice questions (MCQs) for a learning module. 
+        Given the context below, generate {num_of_questions} {difficulty} MCQs. Each MCQ should include:
+        - A single, clear question
+        - Four answer options (a, b, c, d) with one correct answer
+        - Clearly mark the correct answer below the options.
+        - Maintain 2 newline characters after each question answer group.
+        - Do not add any additional text.
+        
+        Text:
+        {context}
 
-def mcq_feedback(input_text: str):
-    prompt = f"Evaluate the following MCQ attempt:\n{input_text}\nProvide feedback."
+        Example:
+        Question: What is the capital of France?
+        a) Berlin
+        b) Madrid
+        c) Paris
+        d) Rome
+        Correct:c
+        
+        Question: What is the capital of India?
+        a) New Delhi
+        b) Madrid
+        c) Paris
+        d) Rome
+        Correct:a
+        """
+
+    text = chat_model.invoke(prompt).content
+    l = []
+    for i in text.split("\n\n"):
+        d = {}
+        res = i.split('\n')
+        d['Question'] = " ".join(res[0].split()[1:])
+        d['Option_1'] = " ".join(res[1].split()[1:])
+        d['Option_2'] = " ".join(res[2].split()[1:])
+        d['Option_3'] = " ".join(res[3].split()[1:])
+        d['Option_4'] = " ".join(res[4].split()[1:])
+        correct = ord(res[5][-1])-ord('a')+1
+        d['Answer'] = "Option_"+str(correct)
+        l.append(d)
+    return l
+
+def mcq_feedback(user_choice, mcq, vector_store):
+    docs = retrieve_relevant_chunks(mcq["Question"], vector_store)
+    context = " ".join([doc.page_content for doc in docs])
+
+    prompt = f"""
+        You are a knowledgeable assistant helping a learner understand multiple-choice questions.
+
+        Based on the document context below, explain why the user's choice is incorrect and provide reasoning for the correct answer.
+
+        Document Context:
+        {context}
+
+        Question: {mcq['Question']}
+        User's Choice: {mcq[user_choice]}
+        Correct Answer: {mcq[mcq['Answer']]}
+
+        Provide a short, educational feedback that helps the user understand their mistake and learn the correct concept.
+        """
     return chat_model.invoke(prompt).content

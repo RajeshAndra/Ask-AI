@@ -1,4 +1,7 @@
+from flask import Flask, request, jsonify
 from func import *
+
+app = Flask(__name__)
 
 USE_EXISTING_EMBEDDINGS = True
 
@@ -61,5 +64,67 @@ def agent():
                 memory=memory
             )
 
-agent = agent()
-print(agent.invoke({"input":"Summarize the pdf"}))
+# agent = agent()
+# mcqs = generate_mcqs("What is power", vector_store, 5, "Easy")
+
+# print(mcqs)
+
+# user_choice = "Option_1"
+# mcq = mcqs[1]
+# print(mcq)
+
+# print(mcq_feedback(user_choice, mcq, vector_store))
+
+@app.route("/query", methods=["POST"])
+def handle_query():
+    data = request.get_json()
+    query = data.get("query", "")
+    if not query:
+        return jsonify({"error": "Query is missing"}), 400
+    response = agent.run(query)
+    return jsonify({"response": response})
+
+@app.route("/mcq", methods=["POST"])
+def handle_mcq():
+    data = request.get_json()
+    topic = data.get("topic", "")
+    difficulty = data.get("difficulty", "Easy")
+    count = int(data.get("count", 5))
+
+    if not topic:
+        return jsonify({"error": "Topic is required"}), 400
+
+    mcqs = generate_mcqs(topic, vector_store, count, difficulty)
+    return jsonify({"mcqs": mcqs})
+
+@app.route("/feedback", methods=["POST"])
+def handle_feedback():
+    data = request.get_json()
+    user_choice = data.get("user_choice")
+    mcq = data.get("mcq")
+
+    if not user_choice or not mcq:
+        return jsonify({"error": "user_choice and mcq data are required"}), 400
+
+    feedback = mcq_feedback(user_choice, mcq, vector_store)
+    return jsonify({"feedback": feedback})
+
+@app.route("/upload", methods=["POST"])
+def upload_pdf():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    pdf = request.files['file']
+    if not pdf.filename.endswith(".pdf"):
+        return jsonify({"error": "Only PDF files are supported"}), 400
+
+    path = f'uploads/{pdf.filename}'
+    pdf.save(path)
+
+    global vector_store
+    vector_store = initialize_vectorstore(use_existing_embeddings=False)
+    return jsonify({"message": "File uploaded and vector store updated."})
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
