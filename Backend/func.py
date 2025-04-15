@@ -207,7 +207,6 @@ def generate_mcqs(query: str, vector_store, num_of_questions, difficulty):
         """
 
     text = chat_model.invoke(prompt).content
-    print(text)
     l = []
     for i in text.split("\n\n"):
         d = {}

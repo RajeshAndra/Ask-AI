@@ -1,0 +1,10 @@
+google-generativeai
+sentence-transformers
+numpy
+langchain
+faiss-cpu
+python-dotenv
+PyMuPDF
+langchain-community
+langchain-google-genai
+duckduckgo-search
