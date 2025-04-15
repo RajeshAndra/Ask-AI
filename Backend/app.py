@@ -1,5 +1,9 @@
 import streamlit as st
 from func import *
+import time
+# Fix the import for StreamlitCallbackHandler
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
+from langchain.callbacks.base import BaseCallbackHandler
 
 def main():
     st.set_page_config(page_title="RAG Assistant & MCQ Generator", layout="wide")
@@ -20,6 +24,8 @@ def main():
         st.session_state.agent = None
     if 'submitted_answer' not in st.session_state:
         st.session_state.submitted_answer = False
+    if 'agent_thoughts' not in st.session_state:
+        st.session_state.agent_thoughts = []
     
     global embedding_model, chat_model
     embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
@@ -72,48 +78,75 @@ def main():
     with tabs[0]:
         st.header("PDF Chat Assistant")
         
-        
         chat_container = st.container()
-        
         
         if st.session_state.vector_store is None:
             st.warning("Please upload PDF documents first in the PDF Upload tab.")
         else:
-            
             user_query = st.chat_input("Ask something about your documents...")
             
-            
+            # Display chat history
             with chat_container:
                 for message in st.session_state.chat_history:
                     with st.chat_message(message["role"]):
                         st.write(message["content"])
+                        
+                        # Only show thought process for assistant messages
+                        if message["role"] == "assistant" and "thoughts" in message and message["thoughts"]:
+                            with st.expander("View Agent's Thought Process"):
+                                st.markdown(message["thoughts"], unsafe_allow_html=True)
             
             if user_query:
-                
+                # Add user message to chat history
                 st.session_state.chat_history.append({"role": "user", "content": user_query})
                 
-                
+                # Display user message
                 with chat_container:
                     with st.chat_message("user"):
                         st.write(user_query)
                 
-                
                 if st.session_state.agent is None:
                     create_agent_tools()
                 
-                
+                # Process the query and show assistant response
                 with chat_container:
                     with st.chat_message("assistant"):
+                        # Create a placeholder for the real-time thought process display
+                        thoughts_placeholder = st.empty()
+                        
+                        # Create a placeholder for the final answer
+                        answer_placeholder = st.empty()
+                        
+                        # Create the custom callback handler
+                        st_callback = CustomAgentCallbackHandler(thoughts_placeholder=thoughts_placeholder)
+                        
                         with st.spinner("Thinking..."):
-                            response = st.session_state.agent.run(user_query)
-                            st.write(response)
+                            # Run the agent with the custom callback handler
+                            response = st.session_state.agent.run(user_query, callbacks=[st_callback])
                             
+                            # Get the HTML of the thought process
+                            thoughts_html = st_callback.get_thoughts_html()
                             
+                            # Clear the thought process placeholder before showing final answer
+                            thoughts_placeholder.empty()
+                            
+                            # Display the final response
+                            answer_placeholder.write(response)
+                            
+                            # Add an expander for the thought process
+                            with st.expander("View Agent's Thought Process"):
+                                st.markdown(thoughts_html, unsafe_allow_html=True)
+                            
+                            # Add the response and thought process to chat history
+                            st.session_state.chat_history.append({
+                                "role": "assistant", 
+                                "content": response,
+                                "thoughts": thoughts_html
+                            })
+                            
+                            # Update memory for the agent
                             st.session_state.memory.chat_memory.add_user_message(user_query)
                             st.session_state.memory.chat_memory.add_ai_message(response)
-                            
-                            
-                            st.session_state.chat_history.append({"role": "assistant", "content": response})
     
     
     with tabs[1]:
@@ -228,6 +261,78 @@ def main():
                         st.session_state.submitted_answer = False
                         st.rerun()
 
+class CustomAgentCallbackHandler(BaseCallbackHandler):
+    def __init__(self, thoughts_placeholder):
+        self.thoughts_placeholder = thoughts_placeholder
+        self.thoughts = []
+        self.tool_inputs = []
+        self.tool_outputs = []
+        self.current_thought = ""
+    
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        self.current_thought += "<div style='background-color: #0db38c; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
+        self.current_thought += "<strong style='color: #1a1a1a;'>🧠 Thinking...</strong><br>"
+        self.current_thought += f"<pre style='white-space: pre-wrap; overflow-x: auto; color: #1a1a1a;'>{prompts[0][:200]}...</pre>"
+        self.current_thought += "</div>"
+        self.thoughts.append(self.current_thought)
+        self.thoughts_placeholder.markdown("".join(self.thoughts), unsafe_allow_html=True)
+        self.current_thought = ""
+
+    
+    def on_llm_end(self, response, **kwargs):
+        pass
+
+    def on_llm_new_token(self, token, **kwargs):
+        pass
+
+    def on_tool_start(self, serialized, input_str, **kwargs):
+        self.current_thought += "<div style='background-color: #3bbb48; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
+        self.current_thought += f"<strong style='color: #1a1a1a;'>🔧 Using Tool:</strong> <span style='color: #1a1a1a;'>{serialized['name']}</span><br>"
+        self.current_thought += f"<strong style='color: #1a1a1a;'>Input:</strong> <span style='color: #1a1a1a;'>{input_str}</span>"
+        self.current_thought += "</div>"
+        self.thoughts.append(self.current_thought)
+        self.thoughts_placeholder.markdown("".join(self.thoughts), unsafe_allow_html=True)
+        self.current_thought = ""
+        self.tool_inputs.append(input_str)
+    
+    def on_tool_end(self, output, **kwargs):
+        self.current_thought += "<div style='background-color: #ea7c21; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
+        self.current_thought += "<strong style='color: #1a1a1a;'>🔍 Tool Output:</strong><br>"
+        self.current_thought += f"<pre style='white-space: pre-wrap; overflow-x: auto; color: #1a1a1a;'>{output[:500]}...</pre>"
+        self.current_thought += "</div>"
+        self.thoughts.append(self.current_thought)
+        self.thoughts_placeholder.markdown("".join(self.thoughts), unsafe_allow_html=True)
+        self.current_thought = ""
+        self.tool_outputs.append(output)
+
+
+    def on_agent_action(self, action, **kwargs):
+        self.current_thought += "<div style='background-color: #ffe3e3; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
+        self.current_thought += f"<strong style='color: #1a1a1a;'>🤔 Action:</strong> <span style='color: #1a1a1a;'>{action.tool}</span><br>"
+        self.current_thought += f"<strong style='color: #1a1a1a;'>Action Input:</strong> <span style='color: #1a1a1a;'>{action.tool_input}</span>"
+        self.current_thought += "</div>"
+        self.thoughts.append(self.current_thought)
+        self.thoughts_placeholder.markdown("".join(self.thoughts), unsafe_allow_html=True)
+        self.current_thought = ""
+
+    def on_chain_start(self, serialized, inputs, **kwargs):
+        pass
+
+    def on_chain_end(self, outputs, **kwargs):
+        pass
+
+    def on_text(self, text, **kwargs):
+        self.current_thought += "<div style='background-color: #2566ab; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
+        self.current_thought += f"<strong>💭 Reasoning:</strong><br><pre style='white-space: pre-wrap;'>{text}</pre>"
+        self.current_thought += "</div>"
+        self.thoughts.append(self.current_thought)
+        self.thoughts_placeholder.markdown("".join(self.thoughts), unsafe_allow_html=True)
+        self.current_thought = ""
+
+    def get_thoughts_html(self):
+        return "".join(self.thoughts)
+
+
 def create_agent_tools():
     if st.session_state.vector_store is None:
         return
@@ -249,13 +354,13 @@ def create_agent_tools():
     rag_query_tool = Tool(
         name="rag_query",
         func=rag_query_wrapper,
-        description="Answer a question based on the context extracted from PDFs and previous chat history."
+        description="If the question can be answered then, answer it based on the context extracted from PDFs and previous chat history."
     )
     
     is_answerable_tool = Tool(
         name="is_answerable",
         func=is_answerable_wrapper,
-        description="Check whether the query can be answered using context from the PDFs and conversation history."
+        description="Check whether the query can be answered using context from the PDFs and conversation history. Use this tool first for any query"
     )
     
     summarize_doc_tool = Tool(
@@ -273,7 +378,7 @@ def create_agent_tools():
     web_search_tool = Tool(
         name="web_search",
         func=web_search,
-        description="Search the web to gather information when the document context does not provide an answer."
+        description="If the question cannot be answered then, search the web to gather information when the document context does not provide an answer."
     )
     
     
