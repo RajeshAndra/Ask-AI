@@ -64,21 +64,10 @@ def agent():
                 memory=memory
             )
 
-# agent = agent()
-# mcqs = generate_mcqs("What is power", vector_store, 5, "Easy")
-
-# print(mcqs)
-
-# user_choice = "Option_1"
-# mcq = mcqs[1]
-# print(mcq)
-
-# print(mcq_feedback(user_choice, mcq, vector_store))
-
-@app.route("/query", methods=["POST"])
+@app.route("/sendMessage", methods=["POST"])
 def handle_query():
     data = request.get_json()
-    query = data.get("query", "")
+    query = data.get("message", "")
     if not query:
         return jsonify({"error": "Query is missing"}), 400
     response = agent.run(query)
@@ -127,4 +116,4 @@ def upload_pdf():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port = 5353)

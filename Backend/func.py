@@ -183,6 +183,8 @@ def generate_mcqs(query: str, vector_store, num_of_questions, difficulty):
         - Clearly mark the correct answer below the options.
         - Maintain 2 newline characters after each question answer group.
         - Do not add any additional text.
+        - There is no newline character between options and the answer.
+        - DO NOT deviate from the below example even the newline should be same as the example.
         
         Text:
         {context}
@@ -195,6 +197,7 @@ def generate_mcqs(query: str, vector_store, num_of_questions, difficulty):
         d) Rome
         Correct:c
         
+
         Question: What is the capital of India?
         a) New Delhi
         b) Madrid
@@ -204,6 +207,7 @@ def generate_mcqs(query: str, vector_store, num_of_questions, difficulty):
         """
 
     text = chat_model.invoke(prompt).content
+    print(text)
     l = []
     for i in text.split("\n\n"):
         d = {}
