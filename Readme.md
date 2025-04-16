@@ -19,7 +19,7 @@ An intelligent educational platform that leverages **multi-agentic Retrieval-Aug
 - Vector Store (FAISS)
 - Multi-agent architecture 
 
-## 💡 How It Works
+##  How It Works
 
 1. The user asks a question or uploads a document.
 2. The retrieval agent fetches relevant content.
